@@ -1,12 +1,12 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from scipy.integrate import odeint
-from scipy.interpolate import interp1d
 import io
 import PyPDF2
 import tabula
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 # Constants
 g = 32.2  # Acceleration due to gravity (ft/s^2)
@@ -25,6 +25,7 @@ api_11b_units = {
     "C-640-365-192": {"torque": 640000, "stroke": 192},
 }
 
+@st.cache_data
 def calculate_fluid_properties(water_cut, oil_gravity, condensate_gravity=None, is_gas_well=False):
     water_density = 62.4  # lb/ft^3
     if is_gas_well:
@@ -35,10 +36,12 @@ def calculate_fluid_properties(water_cut, oil_gravity, condensate_gravity=None, 
         fluid_density = (water_cut/100 * water_density + (1 - water_cut/100) * oil_density)
     return fluid_density
 
+@st.cache_data
 def calculate_rod_properties(rod_grade):
     yield_strengths = {"D": 90000, "K": 110000, "C": 130000, "UHS": 150000}
     return yield_strengths[rod_grade]
 
+@st.cache_data
 def optimize_rod_string(pump_depth, fluid_load, rod_grade, pump_diameter):
     yield_strength = calculate_rod_properties(rod_grade)
     safety_factor = 1.5
@@ -77,13 +80,16 @@ def optimize_rod_string(pump_depth, fluid_load, rod_grade, pump_diameter):
     
     return rod_string[::-1]
 
+@st.cache_data
 def calculate_rod_stretch(load, rod_string, E):
     return sum(load * l / (E * np.pi * (d/2)**2) for d, l in rod_string)
 
+@st.cache_data
 def calculate_damping_factor(fluid_density, tubing_id, rod_diameter):
     annular_area = np.pi * ((tubing_id/2)**2 - (rod_diameter/2)**2)
     return 0.1 * fluid_density * annular_area
 
+@st.cache_data
 def gibbs_wave_equation_3d(y, t, L, rod_string, E, rho, c, stroke, speed, fluid_density, g, pump_area, damping_factor, deviation_angle):
     n = len(y) // 3
     u, v, w = y[:n], y[n:2*n], y[2*n:]
@@ -124,6 +130,7 @@ def gibbs_wave_equation_3d(y, t, L, rod_string, E, rho, c, stroke, speed, fluid_
     
     return np.concatenate([du_dt, dv_dt, dw_dt])
 
+@st.cache_data
 def simulate_rod_pump(L, rod_string, E, rho, stroke, speed, fluid_density, g, pump_area, t_span, n_points, damping_factor, deviation_angle):
     c = np.sqrt(E / rho)
     y0 = np.zeros(3 * n_points)
@@ -133,35 +140,18 @@ def simulate_rod_pump(L, rod_string, E, rho, stroke, speed, fluid_density, g, pu
     
     return t, sol
 
+@st.cache_data
 def calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load):
     return surface_load + rod_weight + acceleration * rod_weight / g - fluid_load
 
+@st.cache_data
 def calculate_gearbox_torque(polished_rod_load, crank_angle, crank_radius, pitman_length):
     torque_factor = (crank_radius * np.sin(crank_angle) + 
                      (crank_radius**2 * np.sin(crank_angle) * np.cos(crank_angle)) / 
                      np.sqrt(pitman_length**2 - crank_radius**2 * np.sin(crank_angle)**2))
     return polished_rod_load * torque_factor
 
-def plot_dynamometer_cards(surface_pos, surface_load, downhole_pos, downhole_load, pump_fill, api_max_fluid_load):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    
-    ax1.plot(surface_pos * 12, surface_load, color='blue')
-    ax1.set_xlabel("Position (inches)")
-    ax1.set_ylabel("Load (lbs)")
-    ax1.set_title("Surface Dynamometer Card")
-    ax1.grid(True)
-    
-    ax2.plot(downhole_pos * 12, downhole_load, color='red')
-    ax2.axhline(y=api_max_fluid_load, color='green', linestyle='--', label='API Max Fluid Load')
-    ax2.set_xlabel("Position (inches)")
-    ax2.set_ylabel("Load (lbs)")
-    ax2.set_title(f"Downhole Dynamometer Card - {pump_fill:.0f}% Fill")
-    ax2.grid(True)
-    ax2.legend()
-    
-    plt.tight_layout()
-    return fig
-
+@st.cache_data
 def calculate_neutral_point(rod_string, fluid_density, pump_area, pump_depth):
     total_weight = 0
     buoyant_weight = 0
@@ -176,6 +166,7 @@ def calculate_neutral_point(rod_string, fluid_density, pump_area, pump_depth):
     neutral_point = pump_depth * (1 - fluid_load / (total_weight - buoyant_weight))
     return neutral_point
 
+@st.cache_data
 def calculate_buckling_load(rod_string, tubing_id):
     critical_loads = []
     for d, l in rod_string:
@@ -185,14 +176,17 @@ def calculate_buckling_load(rod_string, tubing_id):
         critical_loads.append(Pcr)
     return min(critical_loads)
 
+@st.cache_data
 def recommend_pump_depth(perforation_depth, fluid_level, safety_margin=100):
     return min(perforation_depth - safety_margin, fluid_level - safety_margin)
 
+@st.cache_data
 def recommend_sump_depth(pump_depth, tubing_id, liquid_rate, safety_factor=1.5):
     sump_volume = liquid_rate * 5.615 / 1440  # Convert bbl/day to ft^3/min
     sump_height = sump_volume / (np.pi * (tubing_id/24)**2)  # Convert tubing_id to ft
     return pump_depth + sump_height * safety_factor
 
+@st.cache_data
 def calculate_dog_leg_severity(md1, inc1, azi1, md2, inc2, azi2):
     """Calculate dog leg severity between two survey points."""
     dls = np.arccos(np.cos(np.radians(inc2 - inc1)) - 
@@ -200,6 +194,7 @@ def calculate_dog_leg_severity(md1, inc1, azi1, md2, inc2, azi2):
                     (1 - np.cos(np.radians(azi2 - azi1)))) * (180 / np.pi) * 100 / (md2 - md1)
     return dls
 
+@st.cache_data
 def process_deviation_data(deviation_df):
     """Process deviation data and calculate additional parameters."""
     deviation_df['Inc_rad'] = np.radians(deviation_df['Angle'])
@@ -214,18 +209,7 @@ def process_deviation_data(deviation_df):
     
     return deviation_df
 
-def plot_wellpath(deviation_df):
-    """Plot 3D well path."""
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.plot(deviation_df['E-W'], deviation_df['N-S'], deviation_df['TVD'], color='blue')
-    ax.set_xlabel('East-West (m)')
-    ax.set_ylabel('North-South (m)')
-    ax.set_zlabel('TVD (m)')
-    ax.invert_zaxis()
-    plt.title('3D Well Path')
-    return fig
-
+@st.cache_data
 def extract_deviation_data_from_pdf(uploaded_file):
     """Extract deviation data from the uploaded PDF file."""
     try:
@@ -245,13 +229,11 @@ def extract_deviation_data_from_pdf(uploaded_file):
             text += page.extract_text() + "\n"
         
         # Attempt to parse the extracted text into a DataFrame
-        # This is a simple example and may need to be adjusted based on your PDF structure
         lines = text.split('\n')
         data = [line.split() for line in lines if line.strip() and line.split()[0].isdigit()]
         df = pd.DataFrame(data)
 
     # Ensure the DataFrame has the correct column names
-    
     if len(df.columns) >= 10:
         df.columns = ['Sl No', 'SD', 'Angle', 'Azimuth', 'TVD', 'N-S', 'E-W', 'Net Drift', 'Net Dir', 'VS'] + list(df.columns[10:])
     else:
@@ -266,130 +248,123 @@ def extract_deviation_data_from_pdf(uploaded_file):
 
     return df
 
+@st.cache_data
+def plot_wellpath(deviation_df):
+    """Plot 3D well path."""
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot(deviation_df['E-W'], deviation_df['N-S'], deviation_df['TVD'])
+    ax.set_xlabel('East-West (m)')
+    ax.set_ylabel('North-South (m)')
+    ax.set_zlabel('TVD (m)')
+    ax.invert_zaxis()
+    plt.title('3D Well Path')
+    return fig
+
 def main():
+    st.set_page_config(page_title="Advanced Gas Well Deliquification Rod Pump Designer", layout="wide")
     st.title("Advanced Gas Well Deliquification Rod Pump Designer")
 
-    st.sidebar.header("Input Parameters")
+    # Sidebar for input parameters
+    with st.sidebar:
+        st.header("Input Parameters")
+        
+        well_type = st.radio("Well Type", ["Gas Well", "Oil Well"])
+        is_gas_well = well_type == "Gas Well"
 
-    is_gas_well = st.sidebar.checkbox("Is this a gas well?")
+        col1, col2 = st.columns(2)
+        with col1:
+            tubing_id = st.number_input("Tubing ID (inches)", min_value=1.0, max_value=4.0, value=2.375, step=0.125)
+            gas_gravity = st.number_input("Gas Specific Gravity (air=1)", min_value=0.5, max_value=1.5, value=0.65, step=0.01)
+            perforation_depth = st.number_input("Perforation Depth (ft)", min_value=1000.0, max_value=20000.0, value=8000.0, step=100.0)
+        with col2:
+            casing_id = st.number_input("Casing ID (inches)", min_value=4.0, max_value=9.0, value=5.5, step=0.125)
+            gas_rate = st.number_input("Gas Production Rate (MSCF/day)", min_value=100.0, max_value=10000.0, value=500.0, step=50.0)
+            fluid_level = st.number_input("Fluid Level (ft)", min_value=0.0, max_value=perforation_depth, value=3500.0, step=100.0)
 
-    tubing_id = st.sidebar.number_input("Tubing ID (inches)", min_value=1.0, max_value=4.0, value=2.375)
-    casing_id = st.sidebar.number_input("Casing ID (inches)", min_value=4.0, max_value=9.0, value=5.5)
-    gas_gravity = st.sidebar.number_input("Gas Specific Gravity (air=1)", min_value=0.5, max_value=1.5, value=0.65)
-    gas_rate = st.sidebar.number_input("Gas Production Rate (MSCF/day)", min_value=100.0, max_value=10000.0, value=500.0)
-    perforation_depth = st.sidebar.number_input("Perforation Depth (ft)", min_value=1000.0, max_value=20000.0, value=8000.0)
-    fluid_level = st.sidebar.number_input("Fluid Level (ft)", min_value=0.0, max_value=perforation_depth, value=3500.0)
+        water_cut = st.slider("Water Cut (%)", min_value=0, max_value=100, value=50)
+        
+        if is_gas_well:
+            condensate_gravity = st.number_input("Condensate Gravity (API)", min_value=10.0, max_value=100.0, value=60.0, step=1.0)
+            liquid_rate = st.number_input("Condensate + Water Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=50.0, step=1.0)
+        else:
+            oil_gravity = st.number_input("Oil Gravity (API)", min_value=10.0, max_value=70.0, value=40.0, step=1.0)
+            liquid_rate = st.number_input("Liquid Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=100.0, step=1.0)
 
-    water_cut = st.sidebar.number_input("Water Cut (%)", min_value=0.0, max_value=100.0, value=50.0)
-    if is_gas_well:
-        condensate_gravity = st.sidebar.number_input("Condensate Gravity (API)", min_value=10.0, max_value=100.0, value=60.0)
-        liquid_rate = st.sidebar.number_input("Condensate + Water Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=50.0)
-    else:
-        oil_gravity = st.sidebar.number_input("Oil Gravity (API)", min_value=10.0, max_value=70.0, value=40.0)
-        liquid_rate = st.sidebar.number_input("Liquid Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=100.0)
+        recommended_pump_depth = recommend_pump_depth(perforation_depth, fluid_level)
+        pump_depth = st.number_input("Pump Depth (ft)", min_value=1000.0, max_value=10000.0, value=recommended_pump_depth, step=100.0)
+        
+        recommended_sump_depth = recommend_sump_depth(pump_depth, tubing_id, liquid_rate)
+        sump_depth = st.number_input("Sump Depth (ft)", min_value=pump_depth, max_value=perforation_depth, value=recommended_sump_depth, step=100.0)
 
-    recommended_pump_depth = recommend_pump_depth(perforation_depth, fluid_level)
-    pump_depth = st.sidebar.number_input("Pump Depth (ft)", min_value=1000.0, max_value=10000.0, value=recommended_pump_depth)
-    
-    recommended_sump_depth = recommend_sump_depth(pump_depth, tubing_id, liquid_rate)
-    sump_depth = st.sidebar.number_input("Sump Depth (ft)", min_value=pump_depth, max_value=perforation_depth, value=recommended_sump_depth)
+        pump_diameter = st.select_slider("Pump Diameter (inches)", options=[1.06, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5], value=1.5)
+        surface_stroke_length = st.slider("Surface Stroke Length (inches)", min_value=20, max_value=120, value=36, step=1)
+        pump_speed = st.slider("Pump Speed (strokes/min)", min_value=1, max_value=20, value=8, step=1)
 
-    pump_diameter = st.sidebar.number_input("Pump Diameter (inches)", min_value=1.0, max_value=2.5, value=1.5)
-    surface_stroke_length = st.sidebar.number_input("Surface Stroke Length (inches)", min_value=20.0, max_value=120.0, value=36.0)
-    pump_speed = st.sidebar.number_input("Pump Speed (strokes/min)", min_value=1.0, max_value=20.0, value=8.0)
+        rod_grades = ["D", "K", "C", "UHS"]
+        rod_grade = st.selectbox("Rod Grade", rod_grades, index=1)
 
-    rod_grades = ["D", "K", "C", "UHS"]
-    rod_grade = st.sidebar.selectbox("Rod Grade", rod_grades, index=1)
+        api_unit = st.selectbox("API 11B Unit", list(api_11b_units.keys()))
+        crank_radius = st.number_input("Crank Radius (inches)", min_value=10.0, max_value=100.0, value=24.0, step=1.0)
+        pitman_length = st.number_input("Pitman Length (inches)", min_value=50.0, max_value=300.0, value=120.0, step=1.0)
 
-    api_unit = st.sidebar.selectbox("API 11B Unit", list(api_11b_units.keys()))
-    crank_radius = st.sidebar.number_input("Crank Radius (inches)", min_value=10.0, max_value=100.0, value=24.0)
-    pitman_length = st.sidebar.number_input("Pitman Length (inches)", min_value=50.0, max_value=300.0, value=120.0)
+        is_deviated = st.checkbox("Is the well deviated?")
+        
+        uploaded_file = None
+        deviation_angle = 0
+        
+        if is_deviated:
+            st.subheader("Deviated Well Data")
+            uploaded_file = st.file_uploader("Upload deviation data PDF", type="pdf")
 
-    is_deviated = st.sidebar.checkbox("Is the well deviated?")
-    
-    uploaded_file = None
-    deviation_angle = 0
-    
-    if is_deviated:
-        st.sidebar.subheader("Deviated Well Data")
-        uploaded_file = st.sidebar.file_uploader("Upload deviation data PDF", type="pdf")
-    
-    if is_deviated and uploaded_file is not None:
-        try:
-            deviation_df = extract_deviation_data_from_pdf(uploaded_file)
-            if deviation_df is not None:
-                deviation_df = process_deviation_data(deviation_df)
-                st.sidebar.dataframe(deviation_df)
-                
-                deviation_angle = deviation_df['Angle'].max()
-                
-                # Plot well path
-                wellpath_fig = plot_wellpath(deviation_df)
-                st.pyplot(wellpath_fig)
-                
-                # Display dog leg severity analysis
-                st.subheader("Dog Leg Severity Analysis")
-                max_dls = deviation_df['DLS'].max()
-                avg_dls = deviation_df['DLS'].mean()
-                st.write(f"Maximum Dog Leg Severity: {max_dls:.2f} °/100ft")
-                st.write(f"Average Dog Leg Severity: {avg_dls:.2f} °/100ft")
-                
-                # Plot dog leg severity
-                fig, ax = plt.subplots(figsize=(10, 6))
-                ax.plot(deviation_df['SD'], deviation_df['DLS'])
-                ax.set_xlabel('Measured Depth (m)')
-                ax.set_ylabel('Dog Leg Severity (°/100ft)')
-                ax.set_title('Dog Leg Severity vs. Measured Depth')
-                ax.grid(True)
-                st.pyplot(fig)
-            else:
-                st.error("Failed to extract data from the PDF. Please check the file format.")
-        except Exception as e:
-            st.sidebar.error(f"Error processing PDF: {str(e)}")
-    elif is_deviated:
-        st.sidebar.warning("Please upload a PDF file with deviation data.")
+        pump_fill = st.slider("Pump Fill (%)", min_value=0, max_value=100, value=75)
 
-    pump_fill = st.sidebar.slider("Pump Fill (%)", min_value=0, max_value=100, value=75)
+    # Main content area
+    if st.button("Run Analysis", key="run_analysis"):
+        # Perform calculations
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    if st.button("Run Analysis"):
+        status_text.text("Calculating fluid properties...")
+        progress_bar.progress(10)
         if is_gas_well:
             fluid_density = calculate_fluid_properties(water_cut, None, condensate_gravity, is_gas_well=True)
         else:
             fluid_density = calculate_fluid_properties(water_cut, oil_gravity)
         
+        status_text.text("Calculating rod properties...")
+        progress_bar.progress(20)
         yield_strength = calculate_rod_properties(rod_grade)
         
+        status_text.text("Optimizing rod string...")
+        progress_bar.progress(30)
         fluid_load = fluid_density * g * pump_depth * (np.pi * (pump_diameter/2/12)**2)
-        
         rod_string = optimize_rod_string(pump_depth, fluid_load, rod_grade, pump_diameter)
         if rod_string is None:
+            st.error("Failed to optimize rod string. Please check your input parameters.")
             return
         
         rod_weight = sum(rho_steel * np.pi * (d/2)**2 * l for d, l in rod_string)
 
+        status_text.text("Simulating rod pump...")
+        progress_bar.progress(50)
         L = pump_depth
         A = np.pi * (rod_string[0][0] / 2)**2
         rho = rho_steel
-
         stroke = surface_stroke_length / 12
         speed = pump_speed
         pump_area = np.pi * (pump_diameter / 2 / 12)**2
-
         t_span = (0, 60 / speed)
         n_points = 100
-
         damping_factor = calculate_damping_factor(fluid_density, tubing_id, rod_string[0][0])
-
         t, sol = simulate_rod_pump(L, rod_string, E, rho, stroke, speed, fluid_density, g, pump_area, t_span, n_points, damping_factor, deviation_angle)
 
+        status_text.text("Calculating loads and stresses...")
+        progress_bar.progress(70)
         surface_pos = sol[:, 0]
         surface_load = E * A * np.gradient(sol[:, 0], L)
-        
-        # Calculate acceleration
         acceleration = np.gradient(np.gradient(surface_pos, t), t)
-        
         polished_rod_load = calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load)
-
         fluid_load = fluid_density * g * L * pump_area
         downhole_pos = surface_pos + calculate_rod_stretch(polished_rod_load, rod_string, E)
         downhole_load = polished_rod_load - fluid_load - rod_weight
@@ -401,77 +376,83 @@ def main():
         # Calculate API Max Fluid Load
         api_max_fluid_load = fluid_density * g * L * pump_area
 
-        # Generate dynamometer cards
-        dyna_fig = plot_dynamometer_cards(surface_pos, surface_load, downhole_pos, downhole_load, pump_fill, api_max_fluid_load)
-        st.pyplot(dyna_fig)
+        status_text.text("Generating results...")
+        progress_bar.progress(90)
 
-        # Calculate key results
-        max_stress = np.max(surface_load) / A
-        buckling_load = calculate_buckling_load(rod_string, tubing_id)
-        key_results = {
-            "Maximum Polished Rod Load (lbs)": np.max(polished_rod_load),
-            "Minimum Polished Rod Load (lbs)": np.min(polished_rod_load),
-            "Peak-to-Peak Load (lbs)": np.max(polished_rod_load) - np.min(polished_rod_load),
-            "Maximum Gearbox Torque (in-lbs)": np.max(calculate_gearbox_torque(polished_rod_load, np.linspace(0, 2*np.pi, len(t)), crank_radius/12, pitman_length/12)) * 12,
-            "Maximum Stress (psi)": max_stress,
-            "Yield Strength (psi)": yield_strength,
-            "Safety Factor": yield_strength / max_stress,
-            "API Max Fluid Load (lbs)": api_max_fluid_load,
-            "Buckling Load (lbs)": buckling_load,
-        }
+        # Results display
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Dynamometer Cards")
+            chart_data = pd.DataFrame({
+                'Surface Position': surface_pos * 12,
+                'Surface Load': surface_load,
+                'Downhole Position': downhole_pos * 12,
+                'Downhole Load': downhole_load
+            })
+            st.line_chart(chart_data)
 
-        st.subheader("Key Results")
-        for key, value in key_results.items():
-            st.metric(key, f"{value:.2f}")
+        with col2:
+            st.subheader("Key Results")
+            max_stress = np.max(surface_load) / A
+            buckling_load = calculate_buckling_load(rod_string, tubing_id)
+            key_results = {
+                "Maximum Polished Rod Load (lbs)": np.max(polished_rod_load),
+                "Minimum Polished Rod Load (lbs)": np.min(polished_rod_load),
+                "Peak-to-Peak Load (lbs)": np.max(polished_rod_load) - np.min(polished_rod_load),
+                "Maximum Gearbox Torque (in-lbs)": np.max(calculate_gearbox_torque(polished_rod_load, np.linspace(0, 2*np.pi, len(t)), crank_radius/12, pitman_length/12)) * 12,
+                "Maximum Stress (psi)": max_stress,
+                "Yield Strength (psi)": yield_strength,
+                "Safety Factor": yield_strength / max_stress,
+                "API Max Fluid Load (lbs)": api_max_fluid_load,
+                "Buckling Load (lbs)": buckling_load,
+            }
+            for key, value in key_results.items():
+                st.metric(key, f"{value:.2f}")
 
-        if max_stress > yield_strength:
-            st.error("Warning: Maximum stress exceeds yield strength!")
-        else:
-            st.success(f"Rod string design is within yield strength limits. Safety factor: {key_results['Safety Factor']:.2f}")
+        # Expandable sections for detailed analysis
+        with st.expander("Rod String Design"):
+            for i, (diameter, length) in enumerate(rod_string):
+                st.write(f"Section {i+1}: {diameter:.3f} inch diameter, {length:.2f} ft length")
+            neutral_point = calculate_neutral_point(rod_string, fluid_density, pump_area, pump_depth)
+            st.write(f"Neutral Point: {neutral_point:.2f} ft")
 
-        if np.max(polished_rod_load) > buckling_load:
-            st.error("Warning: Maximum polished rod load exceeds buckling load!")
-        else:
-            st.success(f"Rod string design is within buckling limits. Safety factor: {buckling_load / np.max(polished_rod_load):.2f}")
+        with st.expander("Pump Depth and Sump Analysis"):
+            st.write(f"Recommended Pump Depth: {recommended_pump_depth:.2f} ft")
+            st.write(f"Actual Pump Depth: {pump_depth:.2f} ft")
+            st.write(f"Recommended Sump Depth: {recommended_sump_depth:.2f} ft")
+            st.write(f"Actual Sump Depth: {sump_depth:.2f} ft")
+            if pump_depth < recommended_pump_depth:
+                st.warning("Consider lowering the pump to the recommended depth for optimal performance.")
+            if sump_depth < recommended_sump_depth:
+                st.warning("Consider increasing the sump depth to ensure adequate fluid storage.")
 
-        st.subheader("Rod String Design")
-        for i, (diameter, length) in enumerate(rod_string):
-            st.write(f"Section {i+1}: {diameter:.3f} inch diameter, {length:.2f} ft length")
+        if is_deviated and uploaded_file is not None:
+            with st.expander("Deviated Well Analysis"):
+                deviation_df = extract_deviation_data_from_pdf(uploaded_file)
+                if deviation_df is not None:
+                    deviation_df = process_deviation_data(deviation_df)
+                    st.dataframe(deviation_df)
+                    deviation_angle = deviation_df['Angle'].max()
+                    wellpath_fig = plot_wellpath(deviation_df)
+                    st.pyplot(wellpath_fig)
+                    st.subheader("Dog Leg Severity Analysis")
+                    max_dls = deviation_df['DLS'].max()
+                    avg_dls = deviation_df['DLS'].mean()
+                    st.write(f"Maximum Dog Leg Severity: {max_dls:.2f} °/100ft")
+                    st.write(f"Average Dog Leg Severity: {avg_dls:.2f} °/100ft")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    ax.plot(deviation_df['SD'], deviation_df['DLS'])
+                    ax.set_xlabel('Measured Depth (m)')
+                    ax.set_ylabel('Dog Leg Severity (°/100ft)')
+                    ax.set_title('Dog Leg Severity vs. Measured Depth')
+                    ax.grid(True)
+                    st.pyplot(fig)
+                else:
+                    st.error("Failed to extract data from the PDF. Please check the file format.")
 
-        # Calculate and display neutral point
-        neutral_point = calculate_neutral_point(rod_string, fluid_density, pump_area, pump_depth)
-        st.write(f"Neutral Point: {neutral_point:.2f} ft")
-
-        st.subheader("Pump Depth and Sump Analysis")
-        st.write(f"Recommended Pump Depth: {recommended_pump_depth:.2f} ft")
-        st.write(f"Actual Pump Depth: {pump_depth:.2f} ft")
-        st.write(f"Recommended Sump Depth: {recommended_sump_depth:.2f} ft")
-        st.write(f"Actual Sump Depth: {sump_depth:.2f} ft")
-
-        if pump_depth < recommended_pump_depth:
-            st.warning("Consider lowering the pump to the recommended depth for optimal performance.")
-        if sump_depth < recommended_sump_depth:
-            st.warning("Consider increasing the sump depth to ensure adequate fluid storage.")
-
-        st.subheader("Recommendations")
-        if pump_fill < 80:
-            st.write("- Consider adjusting pump speed or stroke length to improve pump efficiency.")
-        if max_stress > 0.8 * yield_strength:
-            st.write("- Consider using a higher grade rod or increasing rod size to reduce stress.")
-        if np.max(calculate_gearbox_torque(polished_rod_load, np.linspace(0, 2*np.pi, len(t)), crank_radius/12, pitman_length/12)) > 0.8 * api_11b_units[api_unit]["torque"]:
-            st.write("- Consider upgrading to a higher capacity pumping unit to reduce stress on the gearbox.")
-        if is_deviated:
-            st.write("- For deviated wells, consider using rod guides to reduce rod-on-tubing wear.")
-            st.write("- Monitor rod wear more frequently in deviated sections of the wellbore.")
-        if perforation_depth - pump_depth < 1000:
-            st.write("- Monitor for gas interference and consider raising the pump if issues occur.")
-        st.write("- Regularly monitor and analyze dynamometer cards to detect and address any changes in pump performance.")
-        st.write("- Conduct periodic fluid level surveys to ensure adequate pump submergence and optimize production.")
-
-        # Gas interference analysis
-        gas_interference_factor = gas_rate / (gas_rate + liquid_rate * 5.615)
-        if gas_interference_factor > 0.1:
-            st.subheader("Gas Interference Analysis")
+        with st.expander("Gas Interference Analysis"):
+            gas_interference_factor = gas_rate / (gas_rate + liquid_rate * 5.615)
             st.write(f"Gas Interference Factor: {gas_interference_factor:.2f}")
             if gas_interference_factor > 0.3:
                 st.warning("High gas interference detected. Consider the following:")
@@ -479,160 +460,125 @@ def main():
                 st.write("- Increase pump submergence")
                 st.write("- Reduce pumping speed")
             else:
-                st.info("Moderate gas interference detected. Monitor closely.")
+                st.info("Moderate to low gas interference detected. Monitor closely.")
 
-        # Rod string stress analysis
-        st.subheader("Rod String Stress Analysis")
-        for i, (diameter, length) in enumerate(rod_string):
-            section_stress = max_stress * (diameter / rod_string[0][0])**2
-            safety_factor = yield_strength / section_stress
+        with st.expander("Rod String Stress Analysis"):
+            for i, (diameter, length) in enumerate(rod_string):
+                section_stress = max_stress * (diameter / rod_string[0][0])**2
+                safety_factor = yield_strength / section_stress
+                st.write(f"Section {i+1}: {diameter:.3f} inch diameter, {length:.2f} ft length")
+                st.write(f"  Maximum stress: {section_stress:.2f} psi")
+                st.write(f"  Safety factor: {safety_factor:.2f}")
+                if safety_factor < 1.3:
+                    st.error(f"Warning: Low safety factor in section {i+1}. Consider redesigning rod string.")
+                elif safety_factor > 2.5:
+                    st.info(f"Section {i+1} may be oversized. Consider optimizing for cost.")
+                else:
+                    st.success(f"Section {i+1} design is acceptable.")
+
+        with st.expander("Pump Efficiency Analysis"):
+            theoretical_production = pump_area * surface_stroke_length / 12 * pump_speed * 1440 / 5.615  # bbl/day
+            pump_efficiency = liquid_rate / theoretical_production * 100
+            st.write(f"Theoretical Production: {theoretical_production:.2f} bbl/day")
+            st.write(f"Actual Production: {liquid_rate:.2f} bbl/day")
+            st.write(f"Pump Efficiency: {pump_efficiency:.2f}%")
+            if pump_efficiency < 70:
+                st.warning("Low pump efficiency. Consider the following:")
+                st.write("- Check for worn pump components")
+                st.write("- Verify pump size and stroke length are appropriate for the well")
+                st.write("- Investigate potential gas interference or fluid pound issues")
+
+        with st.expander("Power Consumption Analysis"):
+            hydraulic_hp = 7.36e-6 * liquid_rate * fluid_density * pump_depth
+            friction_hp = 6.31e-7 * rod_weight * surface_stroke_length * pump_speed
+            total_hp = hydraulic_hp + friction_hp
+            st.write(f"Hydraulic Horsepower: {hydraulic_hp:.2f} hp")
+            st.write(f"Friction Horsepower: {friction_hp:.2f} hp")
+            st.write(f"Total Horsepower: {total_hp:.2f} hp")
+
+        with st.expander("Economic Analysis"):
+            col1, col2 = st.columns(2)
+            with col1:
+                if is_gas_well:
+                    gas_price = st.number_input("Gas Price ($/MCF)", value=3.0, step=0.1)
+                    condensate_price = st.number_input("Condensate Price ($/bbl)", value=50.0, step=1.0)
+                else:
+                    oil_price = st.number_input("Oil Price ($/bbl)", value=50.0, step=1.0)
+            with col2:
+                operating_cost = st.number_input("Operating Cost ($/day)", value=100.0, step=10.0)
             
-            st.write(f"Section {i+1}: {diameter:.3f} inch diameter, {length:.2f} ft length")
-            st.write(f"  Maximum stress: {section_stress:.2f} psi")
-            st.write(f"  Safety factor: {safety_factor:.2f}")
-            
-            if safety_factor < 1.3:
-                st.error(f"Warning: Low safety factor in section {i+1}. Consider redesigning rod string.")
-            elif safety_factor > 2.5:
-                st.info(f"Section {i+1} may be oversized. Consider optimizing for cost.")
+            if is_gas_well:
+                daily_revenue = gas_rate * gas_price / 1000 + liquid_rate * (1 - water_cut/100) * condensate_price
             else:
-                st.success(f"Section {i+1} design is acceptable.")
-
-        # Deviated well analysis
-        if is_deviated and uploaded_file is not None:
-            st.subheader("Deviated Well Analysis")
-            st.write(f"Maximum Deviation Angle: {deviation_angle:.2f}°")
-            st.write(f"Total Vertical Depth (TVD) at pump depth: {deviation_df['TVD'].iloc[-1]:.2f} m")
-            st.write(f"Horizontal Displacement at pump depth: {deviation_df['Net Drift'].iloc[-1]:.2f} m")
+                daily_revenue = liquid_rate * (1 - water_cut/100) * oil_price
             
-            # Rod wear analysis
-            high_dls_sections = deviation_df[deviation_df['DLS'] > 3]
-            if not high_dls_sections.empty:
-                st.warning("High dog leg severity sections detected:")
-                for _, row in high_dls_sections.iterrows():
-                    st.write(f"  Measured Depth: {row['SD']:.2f} m, DLS: {row['DLS']:.2f} °/100ft")
-                st.write("Consider using rod guides in these sections to reduce wear.")
+            daily_profit = daily_revenue - operating_cost
             
-            # Torque and drag analysis
-            # (This is a simplified example; a more comprehensive T&D analysis would require additional calculations)
-            friction_factor = 0.3  # Example friction factor
-            total_torque = deviation_df['Angle'].sum() * friction_factor
-            st.write(f"Estimated additional torque due to wellbore friction: {total_torque:.2f} ft-lbs")
+            st.metric("Daily Revenue", f"${daily_revenue:.2f}")
+            st.metric("Daily Profit", f"${daily_profit:.2f}")
+            st.metric("Monthly Profit", f"${daily_profit * 30:.2f}")
+
+            if daily_profit < 0:
+                st.error("Warning: The well is currently operating at a loss. Consider optimizing production or reducing costs.")
+            elif daily_profit < 100:
+                st.warning("The well is marginally profitable. Consider ways to increase production or reduce costs.")
+            else:
+                st.success("The well is operating profitably.")
+
+        with st.expander("Optimization Suggestions"):
+            suggestions = []
+            if pump_efficiency < 70:
+                suggestions.append("Consider adjusting pump speed or stroke length to improve pump efficiency.")
+            if max_stress > 0.8 * yield_strength:
+                suggestions.append("Evaluate the possibility of using a higher grade rod or increasing rod size to reduce stress.")
+            if gas_interference_factor > 0.2:
+                suggestions.append("Investigate options for better gas separation to reduce gas interference.")
+            if daily_profit < 200:
+                suggestions.append("Explore ways to increase production or reduce operating costs to improve profitability.")
             
-            # Update recommendations based on deviated well analysis
-            st.subheader("Additional Recommendations for Deviated Well")
-            st.write("- Use rod guides in high dog leg severity sections to reduce rod-on-tubing wear.")
-            st.write("- Consider using a rod rotator to distribute wear evenly.")
-            st.write("- Monitor rod string more frequently for signs of wear or fatigue.")
-            st.write(f"- Account for additional {total_torque:.2f} ft-lbs of torque in surface equipment design.")
+            if suggestions:
+                for suggestion in suggestions:
+                    st.write(f"- {suggestion}")
+            else:
+                st.write("No immediate optimization suggestions. Continue monitoring performance.")
 
-        # Pump efficiency analysis
-        st.subheader("Pump Efficiency Analysis")
-        theoretical_production = pump_area * surface_stroke_length / 12 * pump_speed * 1440 / 5.615  # bbl/day
-        pump_efficiency = liquid_rate / theoretical_production * 100
-        st.write(f"Theoretical Production: {theoretical_production:.2f} bbl/day")
-        st.write(f"Actual Production: {liquid_rate:.2f} bbl/day")
-        st.write(f"Pump Efficiency: {pump_efficiency:.2f}%")
+        with st.expander("Future Production Forecast"):
+            col1, col2 = st.columns(2)
+            with col1:
+                decline_rate = st.number_input("Annual Decline Rate (%)", min_value=0.0, max_value=50.0, value=10.0, step=1.0)
+            with col2:
+                forecast_years = st.number_input("Forecast Years", min_value=1, max_value=20, value=5, step=1)
+            
+            years = np.arange(forecast_years + 1)
+            forecasted_production = liquid_rate * (1 - decline_rate/100) ** years
+            cumulative_production = np.cumsum(forecasted_production * 365)
+            
+            fig, ax1 = plt.subplots(figsize=(10, 6))
+            ax2 = ax1.twinx()
+            ax1.plot(years, forecasted_production, 'b-', label='Daily Production')
+            ax2.plot(years, cumulative_production, 'r--', label='Cumulative Production')
+            ax1.set_xlabel('Years')
+            ax1.set_ylabel('Daily Production (bbl/day)', color='b')
+            ax2.set_ylabel('Cumulative Production (bbl)', color='r')
+            ax1.tick_params(axis='y', labelcolor='b')
+            ax2.tick_params(axis='y', labelcolor='r')
+            plt.title('Production Forecast')
+            fig.legend(loc="upper right", bbox_to_anchor=(1,1), bbox_transform=ax1.transAxes)
+            st.pyplot(fig)
+            
+            st.metric("Estimated Cumulative Production", f"{cumulative_production[-1]:.0f} bbl", f"after {forecast_years} years")
 
-        if pump_efficiency < 70:
-            st.warning("Low pump efficiency. Consider the following:")
-            st.write("- Check for worn pump components")
-            st.write("- Verify pump size and stroke length are appropriate for the well")
-            st.write("- Investigate potential gas interference or fluid pound issues")
+        with st.expander("Conclusion"):
+            st.write("Based on the analysis, here are the key takeaways:")
+            st.write(f"1. The current rod pump design has a safety factor of {key_results['Safety Factor']:.2f} for yield strength.")
+            st.write(f"2. The pump is operating at {pump_efficiency:.2f}% efficiency.")
+            st.write(f"3. The well is currently generating a daily profit of ${daily_profit:.2f}.")
+            st.write(f"4. Over the next {forecast_years} years, the well is expected to produce {cumulative_production[-1]:.0f} bbl cumulatively.")
+            st.write("5. Regular monitoring and optimization of the rod pump system is recommended to maintain efficiency and profitability.")
 
-        # Power consumption analysis
-        hydraulic_hp = 7.36e-6 * liquid_rate * fluid_density * pump_depth
-        friction_hp = 6.31e-7 * rod_weight * surface_stroke_length * pump_speed
-        total_hp = hydraulic_hp + friction_hp
-        st.subheader("Power Consumption Analysis")
-        st.write(f"Hydraulic Horsepower: {hydraulic_hp:.2f} hp")
-        st.write(f"Friction Horsepower: {friction_hp:.2f} hp")
-        st.write(f"Total Horsepower: {total_hp:.2f} hp")
-
-        # Economic analysis
-        st.subheader("Economic Analysis")
-        if is_gas_well:
-            gas_price = st.number_input("Gas Price ($/MCF)", value=3.0)
-            condensate_price = st.number_input("Condensate Price ($/bbl)", value=50.0)
-        else:
-            oil_price = st.number_input("Oil Price ($/bbl)", value=50.0)
-        operating_cost = st.number_input("Operating Cost ($/day)", value=100.0)
-        
-        if is_gas_well:
-            daily_revenue = gas_rate * gas_price / 1000 + liquid_rate * (1 - water_cut/100) * condensate_price
-        else:
-            daily_revenue = liquid_rate * (1 - water_cut/100) * oil_price
-        
-        daily_profit = daily_revenue - operating_cost
-        
-        st.write(f"Daily Revenue: ${daily_revenue:.2f}")
-        st.write(f"Daily Profit: ${daily_profit:.2f}")
-        st.write(f"Monthly Profit: ${daily_profit * 30:.2f}")
-
-        if daily_profit < 0:
-            st.error("Warning: The well is currently operating at a loss. Consider optimizing production or reducing costs.")
-        elif daily_profit < 100:
-            st.warning("The well is marginally profitable. Consider ways to increase production or reduce costs.")
-        else:
-            st.success("The well is operating profitably.")
-
-        # Optimization suggestions
-        st.subheader("Optimization Suggestions")
-        if pump_efficiency < 70:
-            st.write("- Consider adjusting pump speed or stroke length to improve pump efficiency.")
-        if max_stress > 0.8 * yield_strength:
-            st.write("- Evaluate the possibility of using a higher grade rod or increasing rod size to reduce stress.")
-        if gas_interference_factor > 0.2:
-            st.write("- Investigate options for better gas separation to reduce gas interference.")
-        if daily_profit < 200:
-            st.write("- Explore ways to increase production or reduce operating costs to improve profitability.")
-        
-        # Future production forecast
-        st.subheader("Future Production Forecast")
-        decline_rate = st.number_input("Annual Decline Rate (%)", min_value=0.0, max_value=50.0, value=10.0)
-        forecast_years = st.number_input("Forecast Years", min_value=1, max_value=20, value=5)
-        
-        years = np.arange(forecast_years + 1)
-        forecasted_production = liquid_rate * (1 - decline_rate/100) ** years
-        cumulative_production = np.cumsum(forecasted_production * 365)
-        
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        ax2 = ax1.twinx()
-        ax1.plot(years, forecasted_production, 'b-')
-        ax2.plot(years, cumulative_production, 'r--')
-        ax1.set_xlabel('Years')
-        ax1.set_ylabel('Daily Production (bbl/day)', color='b')
-        ax2.set_ylabel('Cumulative Production (bbl)', color='r')
-        plt.title('Production Forecast')
-        st.pyplot(fig)
-        
-        st.write(f"Estimated Cumulative Production after {forecast_years} years: {cumulative_production[-1]:.0f} bbl")
-
-        # Conclusion
-        st.subheader("Conclusion")
-        st.write("Based on the analysis, here are the key takeaways:")
-        st.write(f"1. The current rod pump design has a safety factor of {key_results['Safety Factor']:.2f} for yield strength.")
-        st.write(f"2. The pump is operating at {pump_efficiency:.2f}% efficiency.")
-        st.write(f"3. The well is currently generating a daily profit of ${daily_profit:.2f}.")
-        st.write(f"4. Over the next {forecast_years} years, the well is expected to produce {cumulative_production[-1]:.0f} bbl cumulatively.")
-        st.write("5. Regular monitoring and optimization of the rod pump system is recommended to maintain efficiency and profitability.")
+        progress_bar.progress(100)
+        status_text.text("Analysis complete!")
 
 if __name__ == "__main__":
     main()
-
-
-       
-
-
-    
-    
-  
-
-
-
-
-
-
-
-   
-   
+        
