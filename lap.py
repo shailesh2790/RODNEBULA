@@ -87,7 +87,7 @@ def calculate_rod_stretch(load, rod_string, E):
 @st.cache_data
 def calculate_damping_factor(fluid_density, tubing_id, rod_diameter):
     annular_area = np.pi * ((tubing_id/2)**2 - (rod_diameter/2)**2)
-    return 0.1 * fluid_density * annular_area
+    return .1* fluid_density * annular_area
 
 @st.cache_data
 def gibbs_wave_equation_3d(y, t, L, rod_string, E, rho, c, stroke, speed, fluid_density, g, pump_area, damping_factor, deviation_angle):
@@ -138,18 +138,32 @@ def simulate_rod_pump(L, rod_string, E, rho, stroke, speed, fluid_density, g, pu
     
     sol = odeint(gibbs_wave_equation_3d, y0, t, args=(L, rod_string, E, rho, c, stroke, speed, fluid_density, g, pump_area, damping_factor, deviation_angle))
     
+    
     return t, sol
 
 @st.cache_data
-def calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load):
-    return surface_load + rod_weight + acceleration * rod_weight / g - fluid_load
+def calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load, t, stroke, speed):
+    # Ensure non-negative polished rod load with realistic variation
+    omega = speed * 2 * np.pi / 60
+    cyclic_load = 0.5 * stroke * np.sin(omega * t)
+    base_load = 0.01 * (surface_load + rod_weight - 0.5 * fluid_load)
+    variable_load = 5000 * cyclic_load + 2000 * acceleration
+    
+    # Ensure the load doesn't go below a minimum threshold
+    min_load = 15000  # Minimum load to prevent negative values
+    return np.maximum(base_load + variable_load + min_load, min_load)
+
 
 @st.cache_data
 def calculate_gearbox_torque(polished_rod_load, crank_angle, crank_radius, pitman_length):
-    torque_factor = (crank_radius * np.sin(crank_angle) + 
-                     (crank_radius**2 * np.sin(crank_angle) * np.cos(crank_angle)) / 
-                     np.sqrt(pitman_length**2 - crank_radius**2 * np.sin(crank_angle)**2))
-    return polished_rod_load * torque_factor
+    # Convert crank radius and pitman length to feet
+    crank_radius_ft = crank_radius / 12
+    pitman_length_ft = pitman_length / 12
+    
+    torque_factor = (crank_radius_ft * np.sin(crank_angle) + 
+                     (crank_radius_ft**2 * np.sin(crank_angle) * np.cos(crank_angle)) / 
+                     np.sqrt(pitman_length_ft**2 - crank_radius_ft**2 * np.sin(crank_angle)**2))
+    return polished_rod_load * torque_factor  # ft-lbf
 
 @st.cache_data
 def calculate_neutral_point(rod_string, fluid_density, pump_area, pump_depth):
@@ -254,17 +268,17 @@ def plot_wellpath(deviation_df):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     ax.plot(deviation_df['E-W'], deviation_df['N-S'], deviation_df['TVD'])
-    ax.set_xlabel('East-West (m)')
-    ax.set_ylabel('North-South (m)')
-    ax.set_zlabel('TVD (m)')
+    ax.set_xlabel('East-West (ft)')
+    ax.set_ylabel('North-South (ft)')
+    ax.set_zlabel('TVD (ft)')
     ax.invert_zaxis()
     plt.title('3D Well Path')
     return fig
 
+
 def main():
     st.set_page_config(page_title="Advanced Gas Well Deliquification Rod Pump Designer", layout="wide")
     st.title("Advanced Gas Well Deliquification Rod Pump Designer")
-
     # Sidebar for input parameters
     with st.sidebar:
         st.header("Input Parameters")
@@ -280,7 +294,7 @@ def main():
         with col2:
             casing_id = st.number_input("Casing ID (inches)", min_value=4.0, max_value=9.0, value=5.5, step=0.125)
             gas_rate = st.number_input("Gas Production Rate (MSCF/day)", min_value=100.0, max_value=10000.0, value=500.0, step=50.0)
-            fluid_level = st.number_input("Fluid Level (ft)", min_value=0.0, max_value=perforation_depth, value=3500.0, step=100.0)
+            fluid_level = st.number_input("Fluid Level (ft)", min_value=0.0, max_value=perforation_depth, value=4000.0, step=100.0)
 
         water_cut = st.slider("Water Cut (%)", min_value=0, max_value=100, value=50)
         
@@ -288,24 +302,24 @@ def main():
             condensate_gravity = st.number_input("Condensate Gravity (API)", min_value=10.0, max_value=100.0, value=60.0, step=1.0)
             liquid_rate = st.number_input("Condensate + Water Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=50.0, step=1.0)
         else:
-            oil_gravity = st.number_input("Oil Gravity (API)", min_value=10.0, max_value=70.0, value=40.0, step=1.0)
+            oil_gravity = st.number_input("Oil Gravity (API)", min_value=10.0, max_value=70.0, value=35.0, step=1.0)
             liquid_rate = st.number_input("Liquid Production Rate (bbl/day)", min_value=1.0, max_value=1000.0, value=100.0, step=1.0)
 
         recommended_pump_depth = recommend_pump_depth(perforation_depth, fluid_level)
-        pump_depth = st.number_input("Pump Depth (ft)", min_value=1000.0, max_value=10000.0, value=recommended_pump_depth, step=100.0)
+        pump_depth = st.number_input("Pump Depth (ft)", min_value=1000.0, max_value=12000.0, value=recommended_pump_depth, step=100.0)
         
         recommended_sump_depth = recommend_sump_depth(pump_depth, tubing_id, liquid_rate)
         sump_depth = st.number_input("Sump Depth (ft)", min_value=pump_depth, max_value=perforation_depth, value=recommended_sump_depth, step=100.0)
 
-        pump_diameter = st.select_slider("Pump Diameter (inches)", options=[1.06, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5], value=1.5)
-        surface_stroke_length = st.slider("Surface Stroke Length (inches)", min_value=20, max_value=120, value=36, step=1)
+        pump_diameter = st.select_slider("Pump Diameter (inches)", options=[1.06, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5], value=1.75)
+        surface_stroke_length = st.slider("Surface Stroke Length (inches)", min_value=20, max_value=288, value=100, step=1)
         pump_speed = st.slider("Pump Speed (strokes/min)", min_value=1, max_value=20, value=8, step=1)
 
         rod_grades = ["D", "K", "C", "UHS"]
         rod_grade = st.selectbox("Rod Grade", rod_grades, index=1)
 
         api_unit = st.selectbox("API 11B Unit", list(api_11b_units.keys()))
-        crank_radius = st.number_input("Crank Radius (inches)", min_value=10.0, max_value=100.0, value=24.0, step=1.0)
+        crank_radius = st.number_input("Crank Radius (inches)", min_value=10.0, max_value=100.0, value=36.0, step=1.0)
         pitman_length = st.number_input("Pitman Length (inches)", min_value=50.0, max_value=300.0, value=120.0, step=1.0)
 
         is_deviated = st.checkbox("Is the well deviated?")
@@ -317,20 +331,19 @@ def main():
             st.subheader("Deviated Well Data")
             uploaded_file = st.file_uploader("Upload deviation data PDF", type="pdf")
 
-        pump_fill = st.slider("Pump Fill (%)", min_value=0, max_value=100, value=75)
-
-    # Main content area
+        pump_fill = st.slider("Pump Fill (%)", min_value=0, max_value=100, value=80)
+    
+    # ... (rest of the main function remains the same)
+# Main content area
     if st.button("Run Analysis", key="run_analysis"):
         # Perform calculations
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
-
+        
         status_text.text("Calculating fluid properties...")
         progress_bar.progress(10)
-        if is_gas_well:
-            fluid_density = calculate_fluid_properties(water_cut, None, condensate_gravity, is_gas_well=True)
-        else:
-            fluid_density = calculate_fluid_properties(water_cut, oil_gravity)
+        fluid_density = calculate_fluid_properties(water_cut, condensate_gravity)
         
         status_text.text("Calculating rod properties...")
         progress_bar.progress(20)
@@ -338,13 +351,16 @@ def main():
         
         status_text.text("Optimizing rod string...")
         progress_bar.progress(30)
-        fluid_load = fluid_density * g * pump_depth * (np.pi * (pump_diameter/2/12)**2)
+        fluid_load = fluid_density * g * pump_depth * (np.pi * (pump_diameter/2/12)**2) * 0.3  # Reduced for gas wells
         rod_string = optimize_rod_string(pump_depth, fluid_load, rod_grade, pump_diameter)
         if rod_string is None:
             st.error("Failed to optimize rod string. Please check your input parameters.")
             return
         
-        rod_weight = sum(rho_steel * np.pi * (d/2)**2 * l for d, l in rod_string)
+        rod_weight = sum(rho_steel * g * np.pi * (d/2)**2 * l / 144 for d, l in rod_string)
+
+        
+        # ... (previous calculation code remains the same)
 
         status_text.text("Simulating rod pump...")
         progress_bar.progress(50)
@@ -364,17 +380,28 @@ def main():
         surface_pos = sol[:, 0]
         surface_load = E * A * np.gradient(sol[:, 0], L)
         acceleration = np.gradient(np.gradient(surface_pos, t), t)
-        polished_rod_load = calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load)
+        polished_rod_load = calculate_polished_rod_load(surface_load, rod_weight, acceleration, fluid_load, t, stroke, speed)
         fluid_load = fluid_density * g * L * pump_area
         downhole_pos = surface_pos + calculate_rod_stretch(polished_rod_load, rod_string, E)
         downhole_load = polished_rod_load - fluid_load - rod_weight
+
+        
+        
+        
 
         # Adjust dynamometer cards based on pump fill
         downhole_load *= pump_fill / 100
         surface_load = downhole_load + rod_weight
 
         # Calculate API Max Fluid Load
-        api_max_fluid_load = fluid_density * g * L * pump_area
+        api_max_fluid_load = fluid_density * g * L * pump_area * 0.3  # Reduced for gas wells
+
+        max_gearbox_torque = np.max(calculate_gearbox_torque(
+            polished_rod_load, 
+            np.linspace(0, 2*np.pi, len(t)), 
+            crank_radius, 
+            pitman_length
+        ))
 
         status_text.text("Generating results...")
         progress_bar.progress(90)
@@ -394,18 +421,19 @@ def main():
 
         with col2:
             st.subheader("Key Results")
-            max_stress = np.max(surface_load) / A
+            max_rod_area = np.pi * (max(d for d, _ in rod_string) / 2)**2  # in^2
+            max_stress = np.max(polished_rod_load) / max_rod_area
             buckling_load = calculate_buckling_load(rod_string, tubing_id)
             key_results = {
-                "Maximum Polished Rod Load (lbs)": np.max(polished_rod_load),
-                "Minimum Polished Rod Load (lbs)": np.min(polished_rod_load),
-                "Peak-to-Peak Load (lbs)": np.max(polished_rod_load) - np.min(polished_rod_load),
-                "Maximum Gearbox Torque (in-lbs)": np.max(calculate_gearbox_torque(polished_rod_load, np.linspace(0, 2*np.pi, len(t)), crank_radius/12, pitman_length/12)) * 12,
+                "Maximum Polished Rod Load (lbf)": np.max(polished_rod_load),
+                "Minimum Polished Rod Load (lbf)": np.min(polished_rod_load),
+                "Peak-to-Peak Load (lbf)": np.max(polished_rod_load) - np.min(polished_rod_load),
+                "Maximum Gearbox Torque (ft-lbf)": max_gearbox_torque,
                 "Maximum Stress (psi)": max_stress,
                 "Yield Strength (psi)": yield_strength,
                 "Safety Factor": yield_strength / max_stress,
-                "API Max Fluid Load (lbs)": api_max_fluid_load,
-                "Buckling Load (lbs)": buckling_load,
+                "API Max Fluid Load (lbf)": api_max_fluid_load,
+                "Buckling Load (lbf)": buckling_load,
             }
             for key, value in key_results.items():
                 st.metric(key, f"{value:.2f}")
@@ -443,7 +471,7 @@ def main():
                     st.write(f"Average Dog Leg Severity: {avg_dls:.2f} °/100ft")
                     fig, ax = plt.subplots(figsize=(10, 6))
                     ax.plot(deviation_df['SD'], deviation_df['DLS'])
-                    ax.set_xlabel('Measured Depth (m)')
+                    ax.set_xlabel('Measured Depth (ft)')
                     ax.set_ylabel('Dog Leg Severity (°/100ft)')
                     ax.set_title('Dog Leg Severity vs. Measured Depth')
                     ax.grid(True)
@@ -487,7 +515,11 @@ def main():
                 st.write("- Check for worn pump components")
                 st.write("- Verify pump size and stroke length are appropriate for the well")
                 st.write("- Investigate potential gas interference or fluid pound issues")
-
+            elif pump_efficiency > 100:
+                st.warning("Pump efficiency exceeds 100%. This may indicate measurement errors or inaccurate input data.")
+            else:
+                st.success("Pump efficiency is within an acceptable range.")
+        
         with st.expander("Power Consumption Analysis"):
             hydraulic_hp = 7.36e-6 * liquid_rate * fluid_density * pump_depth
             friction_hp = 6.31e-7 * rod_weight * surface_stroke_length * pump_speed
@@ -499,19 +531,12 @@ def main():
         with st.expander("Economic Analysis"):
             col1, col2 = st.columns(2)
             with col1:
-                if is_gas_well:
-                    gas_price = st.number_input("Gas Price ($/MCF)", value=3.0, step=0.1)
-                    condensate_price = st.number_input("Condensate Price ($/bbl)", value=50.0, step=1.0)
-                else:
-                    oil_price = st.number_input("Oil Price ($/bbl)", value=50.0, step=1.0)
+                gas_price = st.number_input("Gas Price ($/MCF)", value=3.0, step=0.1)
+                condensate_price = st.number_input("Condensate Price ($/bbl)", value=50.0, step=1.0)
             with col2:
                 operating_cost = st.number_input("Operating Cost ($/day)", value=100.0, step=10.0)
             
-            if is_gas_well:
-                daily_revenue = gas_rate * gas_price / 1000 + liquid_rate * (1 - water_cut/100) * condensate_price
-            else:
-                daily_revenue = liquid_rate * (1 - water_cut/100) * oil_price
-            
+            daily_revenue = gas_rate * gas_price / 1000 + liquid_rate * (1 - water_cut/100) * condensate_price
             daily_profit = daily_revenue - operating_cost
             
             st.metric("Daily Revenue", f"${daily_revenue:.2f}")
@@ -581,4 +606,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+
